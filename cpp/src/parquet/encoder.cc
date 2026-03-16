@@ -116,9 +116,9 @@ class EncoderImpl : virtual public Encoder {
   const Encoding::type encoding_;
   MemoryPool* pool_;
 
-  /// Type length from descr
+  // Type length from descr
   const int type_length_;
-  /// Number of unencoded bytes written to the encoder. Used for ByteArray type only.
+  // Number of unencoded bytes written to the encoder. Used for ByteArray type only.
   int64_t unencoded_byte_array_data_bytes_ = 0;
 };
 
@@ -1169,7 +1169,7 @@ void DeltaBitPackEncoder<DType>::FlushBlock() {
     // See overflow comment above.
     // TODO: We can remove this condition once CRAN upgrades its macOS
     // SDK from 11.3.
-#if defined(__clang__) && !defined(__cpp_lib_bitops)
+#if defined(__clang__) && !defined(__cpp_lib_bitops) && !defined(__EMSCRIPTEN__)
     const auto bit_width = bit_width_data[i] =
         std::log2p1(static_cast<UT>(max_delta) - static_cast<UT>(min_delta));
 #else
