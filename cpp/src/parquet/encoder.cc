@@ -875,10 +875,12 @@ class ByteStreamSplitEncoderBase : public EncoderImpl,
       return buf;
     }
     auto output_buffer = AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-    uint8_t* output_buffer_raw = output_buffer->mutable_data();
-    const uint8_t* raw_values = sink_.data();
-    ::arrow::util::internal::ByteStreamSplitEncode(
-        raw_values, /*width=*/byte_width_, num_values_in_buffer_, output_buffer_raw);
+    if (num_values_in_buffer_ > 0) {
+      uint8_t* output_buffer_raw = output_buffer->mutable_data();
+      const uint8_t* raw_values = sink_.data();
+      ::arrow::util::internal::ByteStreamSplitEncode(
+          raw_values, /*width=*/byte_width_, num_values_in_buffer_, output_buffer_raw);
+    }
     sink_.Reset();
     num_values_in_buffer_ = 0;
     return output_buffer;
@@ -1169,7 +1171,8 @@ void DeltaBitPackEncoder<DType>::FlushBlock() {
     // See overflow comment above.
     // TODO: We can remove this condition once CRAN upgrades its macOS
     // SDK from 11.3.
-#if defined(__clang__) && !defined(__cpp_lib_bitops) && !defined(__EMSCRIPTEN__)
+    // __apple_build_version__ should be defined only on Apple clang
+#if defined(__apple_build_version__) && !defined(__cpp_lib_bitops)
     const auto bit_width = bit_width_data[i] =
         std::log2p1(static_cast<UT>(max_delta) - static_cast<UT>(min_delta));
 #else

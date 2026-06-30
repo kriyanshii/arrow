@@ -192,6 +192,12 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
     pa.int16() even if pa.int8() was passed to the function. Note that an
     explicit index type will not be demoted even if it is wider than required.
 
+    This class supports Python's standard operators
+    for element-wise operations, i.e. arithmetic (`+`, `-`, `/`, `%`, `**`),
+    bitwise (`&`, `|`, `^`, `>>`, `<<`) and others.
+    They can be used directly instead of calling underlying
+    `pyarrow.compute` functions explicitly.
+
     Examples
     --------
     >>> import pandas as pd
@@ -229,6 +235,25 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
     >>> arr = pa.array(range(1024), type=pa.dictionary(pa.int8(), pa.int64()))
     >>> arr.type.index_type
     DataType(int16)
+
+    >>> arr1 = pa.array([1, 2, 3], type=pa.int8())
+    >>> arr2 = pa.array([4, 5, 6], type=pa.int8())
+    >>> arr1 + arr2
+    <pyarrow.lib.Int8Array object at ...>
+    [
+      5,
+      7,
+      9
+    ]
+
+    >>> val = pa.scalar(42)
+    >>> val - arr1
+    <pyarrow.lib.Int64Array object at ...>
+    [
+      41,
+      40,
+      39
+    ]
     """
     cdef:
         CMemoryPool* pool = maybe_unbox_memory_pool(memory_pool)
@@ -241,6 +266,23 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
     if type is not None and type.id == _Type_EXTENSION:
         extension_type = type
         type = type.storage_type
+        # GH-49644: when building a fixed_shape_tensor from a sequence of arrays,
+        # the converter only sees the flat storage type, so validate the
+        # tensor-specific constraints here where the type is still known.
+        if (isinstance(extension_type, FixedShapeTensorType)
+                and isinstance(obj, (list, tuple))):
+            if extension_type.permutation is not None:
+                raise NotImplementedError(
+                    "Converting a sequence of arrays to a fixed_shape_tensor "
+                    "with a permutation is not supported")
+            expected_shape = tuple(extension_type.shape)
+            for element in obj:
+                shape = getattr(element, "shape", None)
+                if (shape is not None and len(shape) >= 2
+                        and tuple(shape) != expected_shape):
+                    raise ValueError(
+                        f"Cannot convert array of shape {tuple(shape)} to a "
+                        f"fixed_shape_tensor of shape {expected_shape}")
 
     if from_pandas is None:
         c_from_pandas = False
@@ -331,8 +373,8 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
                 values.codes, mask, index_type, memory_pool)
             try:
                 dictionary = array(
-                    values.categories.values, type=value_type,
-                    memory_pool=memory_pool)
+                    values.categories, type=value_type,
+                    from_pandas=True, memory_pool=memory_pool)
             except TypeError:
                 # TODO when removing the deprecation warning, this whole
                 # try/except can be removed (to bubble the TypeError of
@@ -346,7 +388,8 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
                         "TypeError",
                         FutureWarning, stacklevel=2)
                     dictionary = array(
-                        values.categories.values, memory_pool=memory_pool)
+                        values.categories, from_pandas=True,
+                        memory_pool=memory_pool)
                 else:
                     raise
 
@@ -375,7 +418,7 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
             result = _sequence_to_array(obj, mask, size, type, pool, c_from_pandas)
 
     if extension_type is not None:
-        result = ExtensionArray.from_storage(extension_type, result)
+        result = extension_type.wrap_array(result)
     return result
 
 
@@ -1122,7 +1165,6 @@ cdef class Array(_PandasConvertible):
         >>> left = pa.array(["one", "two", "three"])
         >>> right = pa.array(["two", None, "two-and-a-half", "three"])
         >>> print(left.diff(right)) # doctest: +SKIP
-
         @@ -0, +0 @@
         -"one"
         @@ -2, +1 @@
@@ -1681,7 +1723,7 @@ cdef class Array(_PandasConvertible):
         self._assert_cpu()
         return _pc().index(self, value, start, end, memory_pool=memory_pool)
 
-    def sort(self, order="ascending", **kwargs):
+    def sort(self, order="ascending", null_placement="at_end", **kwargs):
         """
         Sort the Array
 
@@ -1690,6 +1732,9 @@ cdef class Array(_PandasConvertible):
         order : str, default "ascending"
             Which order to sort values in.
             Accepted values are "ascending", "descending".
+        null_placement : str, default "at_end"
+            Whether nulls and NaNs are placed at the start or at the end.
+            Accepted values are "at_end", "at_start".
         **kwargs : dict, optional
             Additional sorting options.
             As allowed by :class:`SortOptions`
@@ -1701,7 +1746,7 @@ cdef class Array(_PandasConvertible):
         self._assert_cpu()
         indices = _pc().sort_indices(
             self,
-            options=_pc().SortOptions(sort_keys=[("", order)], **kwargs)
+            options=_pc().SortOptions(sort_keys=[("", order, null_placement)], **kwargs)
         )
         return self.take(indices)
 
@@ -2259,6 +2304,54 @@ cdef class Array(_PandasConvertible):
             stat.init(sp_stat)
             return stat
 
+    def __abs__(self):
+        self._assert_cpu()
+        return _pc().call_function('abs_checked', [self])
+
+    def __add__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('add_checked', [self, other])
+
+    def __truediv__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('divide_checked', [self, other])
+
+    def __mul__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('multiply_checked', [self, other])
+
+    def __neg__(self):
+        self._assert_cpu()
+        return _pc().call_function('negate_checked', [self])
+
+    def __pow__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('power_checked', [self, other])
+
+    def __sub__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('subtract_checked', [self, other])
+
+    def __and__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('bit_wise_and', [self, other])
+
+    def __or__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('bit_wise_or', [self, other])
+
+    def __xor__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('bit_wise_xor', [self, other])
+
+    def __lshift__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('shift_left_checked', [self, other])
+
+    def __rshift__(self, object other):
+        self._assert_cpu()
+        return _pc().call_function('shift_right_checked', [self, other])
+
 
 cdef _array_like_to_pandas(obj, options, types_mapper):
     cdef:
@@ -2276,6 +2369,13 @@ cdef _array_like_to_pandas(obj, options, types_mapper):
             dtype = original_type.to_pandas_dtype()
         except NotImplementedError:
             pass
+    elif pandas_api.uses_string_dtype() and not options["strings_to_categorical"] and (
+        original_type.id == _Type_STRING or
+        original_type.id == _Type_LARGE_STRING or
+        original_type.id == _Type_STRING_VIEW
+    ):
+        # for pandas 3.0+, use pandas' new default string dtype
+        dtype = pandas_api.pd.StringDtype(na_value=np.nan)
 
     # Only call __from_arrow__ for Arrow extension types or when explicitly
     # overridden via types_mapper
@@ -2557,6 +2657,7 @@ cdef class BaseListArray(Array):
         --------
 
         Basic logical list-array's flatten
+
         >>> import pyarrow as pa
         >>> values = [1, 2, 3, 4]
         >>> offsets = [2, 1, 0]
@@ -4305,7 +4406,7 @@ cdef class StructArray(Array):
         result.validate()
         return result
 
-    def sort(self, order="ascending", by=None, **kwargs):
+    def sort(self, order="ascending", null_placement="at_end", by=None, **kwargs):
         """
         Sort the StructArray
 
@@ -4314,6 +4415,9 @@ cdef class StructArray(Array):
         order : str, default "ascending"
             Which order to sort values in.
             Accepted values are "ascending", "descending".
+        null_placement : str, default "at_end"
+            Whether nulls and NaNs are placed at the start or at the end.
+            Accepted values are "at_end", "at_start".
         by : str or None, default None
             If to sort the array by one of its fields
             or by the whole array.
@@ -4326,9 +4430,10 @@ cdef class StructArray(Array):
         result : StructArray
         """
         if by is not None:
-            tosort, sort_keys = self._flattened_field(by), [("", order)]
+            tosort, sort_keys = self._flattened_field(by), [("", order, null_placement)]
         else:
-            tosort, sort_keys = self, [(field.name, order) for field in self.type]
+            tosort, sort_keys = self, [
+                (field.name, order, null_placement) for field in self.type]
         indices = _pc().sort_indices(
             tosort, options=_pc().SortOptions(sort_keys=sort_keys, **kwargs)
         )
@@ -4610,6 +4715,30 @@ cdef class FixedShapeTensorArray(ExtensionArray):
         400
       ]
     ]
+
+    Create an extension array from a list of multi-dimensional NumPy arrays.
+    Each element is flattened in row-major (C) order, and its shape must match
+    the tensor shape.
+
+    >>> import numpy as np
+    >>> pa.array([np.array([[1, 2], [3, 4]], dtype=np.int32),
+    ...           np.array([[10, 20], [30, 40]], dtype=np.int32)],
+    ...          type=tensor_type)
+    <pyarrow.lib.FixedShapeTensorArray object at ...>
+    [
+      [
+        1,
+        2,
+        3,
+        4
+      ],
+      [
+        10,
+        20,
+        30,
+        40
+      ]
+    ]
     """
 
     def to_numpy_ndarray(self):
@@ -4840,7 +4969,7 @@ cdef class Bool8Array(ExtensionArray):
     def from_numpy(obj):
         """
         Convert numpy array to a bool8 extension array without making a copy.
-        The input array must be 1-dimensional, with either bool_ or int8 dtype.
+        The input array must be 1-dimensional, with either ``bool_`` or ``int8`` dtype.
 
         Parameters
         ----------

@@ -32,6 +32,8 @@ is a space-efficient columnar storage format for complex data.  The Parquet
 C++ implementation is part of the Apache Arrow project and benefits
 from tight integration with the Arrow C++ classes and facilities.
 
+.. _cpp-parquet-reading:
+
 Reading Parquet files
 =====================
 
@@ -498,7 +500,8 @@ physical type.
 
 * \(3) On the write side, an Arrow Date64 is also mapped to a Parquet DATE INT32.
 
-* \(4) On the write side, an Arrow FixedSizedList is also mapped to a Parquet LIST.
+* \(4) On the write side, an Arrow FixedSizeList, ListView or LargeListView is
+  also mapped to a Parquet LIST.
 
 * \(5) On the read side, a key with multiple values does not get deduplicated,
   in contradiction with the

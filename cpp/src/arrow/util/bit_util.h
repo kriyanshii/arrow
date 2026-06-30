@@ -18,9 +18,12 @@
 #pragma once
 
 #include <bit>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
+#include "arrow/util/endian.h"
 #include "arrow/util/macros.h"
 #include "arrow/util/visibility.h"
 
@@ -139,9 +142,10 @@ static inline uint64_t TrailingBits(uint64_t v, int num_bits) {
 static inline int Log2(uint64_t x) {
   // DCHECK_GT(x, 0);
 
-  // TODO: We can remove this condition once CRAN upgrades its macOS
-  // SDK from 11.3.
-#if defined(__clang__) && !defined(__cpp_lib_bitops) && !defined(__EMSCRIPTEN__)
+// TODO: We can remove this condition once CRAN upgrades its macOS
+// SDK from 11.3.
+// __apple_build_version__ should be defined only on Apple clang
+#if defined(__apple_build_version__) && !defined(__cpp_lib_bitops)
   return std::log2p1(x - 1);
 #else
   return std::bit_width(x - 1);
@@ -173,6 +177,39 @@ static constexpr bool GetBit(const uint8_t* bits, uint64_t i) {
 // Gets the i-th bit from a byte. Should only be used with i <= 7.
 static constexpr bool GetBitFromByte(uint8_t byte, uint8_t i) {
   return byte & kBitmask[i];
+}
+
+template <typename Uint>
+struct CopyBitsParams {
+  Uint src = {};
+  Uint dst = {};
+  int start = {};
+  int end = {};
+};
+
+/// Copy a contiguous span of bits from src into dst.
+///
+/// Copy bits [start, end[ from src into the position [start, end[ in dst
+/// and return the result (inputs are unmodified).
+/// Setting `kAllowFullCopy` to false is an optimization when the caller can
+/// guarantee that the range of bits to copy does not cover the whole range.
+template <typename Uint, bool kAllowFullCopy = true>
+[[nodiscard]] constexpr Uint CopyBitsInInteger(const CopyBitsParams<Uint>& params) {
+  constexpr auto kUintSizeBits = static_cast<int>(sizeof(Uint) * 8);
+  assert(params.start <= params.end);
+  assert(params.start < kUintSizeBits);
+  assert(params.end <= kUintSizeBits);
+
+  const int length = params.end - params.start;
+  if constexpr (kAllowFullCopy) {
+    if (length == kUintSizeBits) {
+      return params.src;
+    }
+  }
+  assert(length < kUintSizeBits);
+  const Uint mask =
+      static_cast<Uint>(LeastSignificantBitMask<Uint, false>(length) << params.start);
+  return (~mask & params.dst) | (mask & params.src);
 }
 
 static inline void ClearBit(uint8_t* bits, int64_t i) {

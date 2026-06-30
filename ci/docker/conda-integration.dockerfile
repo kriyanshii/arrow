@@ -16,13 +16,13 @@
 # under the License.
 
 ARG repo
-ARG arch=amd64
-FROM ${repo}:${arch}-conda-cpp
+ARG arch
+ARG arch_short
+FROM --platform=linux/${arch} ${repo}:${arch_short}-conda-cpp
 
-ARG arch=amd64
 # We need to synchronize the following values with the values in .env
 # and services.conda-integration in compose.yaml.
-ARG maven=3.8.7
+ARG maven=3.9.9
 ARG node=20
 ARG yarn=1.22
 ARG jdk=17

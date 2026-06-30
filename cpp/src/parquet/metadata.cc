@@ -22,6 +22,7 @@
 #include <memory>
 #include <ostream>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -89,39 +90,47 @@ std::string ParquetVersionToString(ParquetVersion::type ver) {
   return "UNKNOWN";
 }
 
-template <typename DType>
-static std::shared_ptr<Statistics> MakeTypedColumnStats(
-    const format::ColumnMetaData& metadata, const ColumnDescriptor* descr,
-    ::arrow::MemoryPool* pool) {
-  std::optional<bool> min_exact =
-      metadata.statistics.__isset.is_min_value_exact
-          ? std::optional<bool>(metadata.statistics.is_min_value_exact)
-          : std::nullopt;
-  std::optional<bool> max_exact =
-      metadata.statistics.__isset.is_max_value_exact
-          ? std::optional<bool>(metadata.statistics.is_max_value_exact)
-          : std::nullopt;
-  // If ColumnOrder is defined, return max_value and min_value
-  if (descr->column_order().get_order() == ColumnOrder::TYPE_DEFINED_ORDER) {
-    return MakeStatistics<DType>(
-        descr, metadata.statistics.min_value, metadata.statistics.max_value,
-        metadata.num_values - metadata.statistics.null_count,
-        metadata.statistics.null_count, metadata.statistics.distinct_count,
-        metadata.statistics.__isset.max_value && metadata.statistics.__isset.min_value,
-        metadata.statistics.__isset.null_count,
-        metadata.statistics.__isset.distinct_count, min_exact, max_exact, pool);
-  }
-  // Default behavior
-  return MakeStatistics<DType>(
-      descr, metadata.statistics.min, metadata.statistics.max,
-      metadata.num_values - metadata.statistics.null_count,
-      metadata.statistics.null_count, metadata.statistics.distinct_count,
-      metadata.statistics.__isset.max && metadata.statistics.__isset.min,
-      metadata.statistics.__isset.null_count, metadata.statistics.__isset.distinct_count,
-      min_exact, max_exact, pool);
-}
-
 namespace {
+
+template <typename DType>
+std::shared_ptr<Statistics> MakeTypedColumnStats(const format::ColumnMetaData& metadata,
+                                                 const ColumnDescriptor* descr,
+                                                 ::arrow::MemoryPool* pool) {
+  const auto& statistics = metadata.statistics;
+  const std::string kEmpty = "";
+  const std::string* encoded_min = &kEmpty;
+  const std::string* encoded_max = &kEmpty;
+  bool has_min_max = false;
+  std::optional<bool> min_exact = std::nullopt;
+  std::optional<bool> max_exact = std::nullopt;
+
+  switch (GetStatisticsMinMaxField(*descr)) {
+    case StatisticsMinMaxField::kMinValueMaxValue:
+      encoded_min = &statistics.min_value;
+      encoded_max = &statistics.max_value;
+      has_min_max = statistics.__isset.max_value && statistics.__isset.min_value;
+      min_exact = statistics.__isset.is_min_value_exact
+                      ? std::optional<bool>(statistics.is_min_value_exact)
+                      : std::nullopt;
+      max_exact = statistics.__isset.is_max_value_exact
+                      ? std::optional<bool>(statistics.is_max_value_exact)
+                      : std::nullopt;
+      break;
+    case StatisticsMinMaxField::kLegacyMinMax:
+      encoded_min = &statistics.min;
+      encoded_max = &statistics.max;
+      has_min_max = statistics.__isset.max && statistics.__isset.min;
+      break;
+    case StatisticsMinMaxField::kInvalid:
+      break;
+  }
+
+  return MakeStatistics<DType>(
+      descr, *encoded_min, *encoded_max, metadata.num_values - statistics.null_count,
+      statistics.null_count, statistics.distinct_count, has_min_max,
+      statistics.__isset.null_count, statistics.__isset.distinct_count, min_exact,
+      max_exact, pool);
+}
 
 std::shared_ptr<geospatial::GeoStatistics> MakeColumnGeometryStats(
     const format::ColumnMetaData& metadata, const ColumnDescriptor* descr) {
@@ -335,12 +344,8 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
     {
       const std::lock_guard<std::mutex> guard(stats_mutex_);
       if (possible_encoded_stats_ == nullptr) {
-        possible_encoded_stats_ =
-            std::make_shared<EncodedStatistics>(FromThrift(column_metadata_->statistics));
-        if (descr_->sort_order() == SortOrder::UNKNOWN) {
-          // If the column SortOrder is Unknown we can't trust max/min.
-          possible_encoded_stats_->ClearMinMax();
-        }
+        possible_encoded_stats_ = std::make_shared<EncodedStatistics>(
+            FromThrift(column_metadata_->statistics, GetStatisticsMinMaxField(*descr_)));
       }
     }
     return writer_version_->HasCorrectStatistics(type(), *possible_encoded_stats_,
@@ -809,12 +814,11 @@ class FileMetaData::FileMetaDataImpl {
     uint32_t serialized_len = metadata_len_;
     ThriftSerializer serializer;
     serializer.SerializeToBuffer(metadata_.get(), &serialized_len, &serialized_data);
-    ::arrow::util::span<const uint8_t> serialized_data_span(serialized_data,
-                                                            serialized_len);
+    std::span<const uint8_t> serialized_data_span(serialized_data, serialized_len);
 
     // encrypt with nonce
-    ::arrow::util::span<const uint8_t> nonce(reinterpret_cast<const uint8_t*>(signature),
-                                             encryption::kNonceLength);
+    std::span<const uint8_t> nonce(reinterpret_cast<const uint8_t*>(signature),
+                                   encryption::kNonceLength);
     auto tag = reinterpret_cast<const uint8_t*>(signature) + encryption::kNonceLength;
 
     const SecureString& key = file_decryptor_->GetFooterKey();
@@ -867,8 +871,7 @@ class FileMetaData::FileMetaDataImpl {
       uint8_t* serialized_data;
       uint32_t serialized_len;
       serializer.SerializeToBuffer(metadata_.get(), &serialized_len, &serialized_data);
-      ::arrow::util::span<const uint8_t> serialized_data_span(serialized_data,
-                                                              serialized_len);
+      std::span<const uint8_t> serialized_data_span(serialized_data, serialized_len);
 
       // encrypt the footer key
       std::vector<uint8_t> encrypted_data(encryptor->CiphertextLength(serialized_len));
@@ -1038,7 +1041,7 @@ class FileMetaData::FileMetaDataImpl {
         if (column_order.__isset.TYPE_ORDER) {
           column_orders.push_back(ColumnOrder::type_defined_);
         } else {
-          column_orders.push_back(ColumnOrder::undefined_);
+          column_orders.push_back(ColumnOrder::unknown_);
         }
       }
     } else {
@@ -1773,8 +1776,7 @@ class ColumnChunkMetaDataBuilder::ColumnChunkMetaDataBuilderImpl {
 
         serializer.SerializeToBuffer(&column_chunk_->meta_data, &serialized_len,
                                      &serialized_data);
-        ::arrow::util::span<const uint8_t> serialized_data_span(serialized_data,
-                                                                serialized_len);
+        std::span<const uint8_t> serialized_data_span(serialized_data, serialized_len);
 
         std::vector<uint8_t> encrypted_data(encryptor->CiphertextLength(serialized_len));
         int32_t encrypted_len = encryptor->Encrypt(serialized_data_span, encrypted_data);

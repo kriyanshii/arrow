@@ -100,8 +100,8 @@ class TestPrimitiveWriter : public PrimitiveTypedTest<TestType> {
     auto source = std::make_shared<::arrow::io::BufferReader>(buffer);
     ReaderProperties readerProperties;
     readerProperties.set_page_checksum_verification(page_checksum_verify);
-    std::unique_ptr<PageReader> page_reader =
-        PageReader::Open(std::move(source), num_rows, compression, readerProperties);
+    std::unique_ptr<PageReader> page_reader = PageReader::Open(
+        std::move(source), num_rows, compression, readerProperties, *this->descr_);
     reader_ = std::static_pointer_cast<TypedColumnReader<TestType>>(
         ColumnReader::Make(this->descr_, std::move(page_reader)));
   }
@@ -1053,8 +1053,10 @@ TEST(TestColumnWriter, LARGE_MEMORY_TEST(WriteLargeDictEncodedPage)) {
                       {
                           PrimitiveNode::Make("item", Repetition::REQUIRED, Type::INT32),
                       }));
-  auto properties =
-      WriterProperties::Builder().data_pagesize(1024 * 1024 * 1024)->build();
+  auto properties = WriterProperties::Builder()
+                        .data_pagesize(1024 * 1024 * 1024)
+                        ->max_rows_per_page(std::numeric_limits<int64_t>::max())
+                        ->build();
   auto file_writer = ParquetFileWriter::Open(sink, schema, properties);
   auto rg_writer = file_writer->AppendRowGroup();
 
@@ -1124,8 +1126,10 @@ TEST(TestColumnWriter, LARGE_MEMORY_TEST(ThrowsOnDictIndicesTooLarge)) {
                       {
                           PrimitiveNode::Make("item", Repetition::REQUIRED, Type::INT32),
                       }));
-  auto properties =
-      WriterProperties::Builder().data_pagesize(4 * 1024LL * 1024 * 1024)->build();
+  auto properties = WriterProperties::Builder()
+                        .data_pagesize(4 * 1024LL * 1024 * 1024)
+                        ->max_rows_per_page(std::numeric_limits<int64_t>::max())
+                        ->build();
   auto file_writer = ParquetFileWriter::Open(sink, schema, properties);
   auto rg_writer = file_writer->AppendRowGroup();
 
@@ -2054,8 +2058,9 @@ TEST_F(TestValuesWriterInt32Type, AvoidCompressedInDataPageV2) {
     ASSERT_OK_AND_ASSIGN(auto buffer, this->sink_->Finish());
     auto source = std::make_shared<::arrow::io::BufferReader>(buffer);
     ReaderProperties readerProperties;
-    std::unique_ptr<PageReader> page_reader = PageReader::Open(
-        std::move(source), total_num_values, compression, readerProperties);
+    std::unique_ptr<PageReader> page_reader =
+        PageReader::Open(std::move(source), total_num_values, compression,
+                         readerProperties, *this->descr_);
     auto data_page = std::static_pointer_cast<DataPageV2>(page_reader->NextPage());
     ASSERT_TRUE(data_page != nullptr);
     ASSERT_FALSE(data_page->is_compressed());

@@ -28,7 +28,7 @@ project(pyarrow)
 # which in turn meant that Py_GIL_DISABLED was not set.
 set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 
-set(PYARROW_VERSION "24.0.0-SNAPSHOT")
+set(PYARROW_VERSION "25.0.0-SNAPSHOT")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" PYARROW_BASE_VERSION "${PYARROW_VERSION}")
 
 # Generate SO version and full SO version
@@ -292,6 +292,15 @@ message(STATUS "Found Cython version: ${CYTHON_VERSION}")
 # Arrow C++ and set default PyArrow build options
 include(GNUInstallDirs)
 find_package(Arrow REQUIRED)
+
+# When not bundling Arrow C++ libraries on macOS, add the Arrow library
+# directory to the RPATH so that the extensions can find libarrow at runtime.
+if(APPLE
+   AND NOT PYARROW_BUNDLE_ARROW_CPP
+   AND ARROW_SHARED_LIB)
+  get_filename_component(_arrow_lib_dir "${ARROW_SHARED_LIB}" DIRECTORY)
+  list(APPEND CMAKE_INSTALL_RPATH "${_arrow_lib_dir}")
+endif()
 
 macro(define_option name description arrow_option)
   set("PYARROW_${name}"
@@ -968,6 +977,9 @@ foreach(module ${CYTHON_EXTENSIONS})
         continue()
       endif()
     endif()
+    if(output MATCHES "\\.h$")
+      continue()
+    endif()
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${output} DESTINATION ".")
   endforeach()
 endforeach()
@@ -1029,32 +1041,40 @@ endif()
 #
 # Type stubs with docstring injection
 #
+# TODO(GH-32609): Reintroduce type stubs into PyArrow wheels.
+# GH-49831: Temporarily do not install pyarrow-stubs into wheels.
 # Stubs live in pyarrow-stubs/pyarrow/ during development but are installed
 # alongside the package so type checkers can find them (PEP 561).
-set(PYARROW_STUBS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyarrow-stubs/pyarrow")
-if(EXISTS "${PYARROW_STUBS_SOURCE_DIR}")
-  install(DIRECTORY "${PYARROW_STUBS_SOURCE_DIR}/"
-          DESTINATION "."
-          FILES_MATCHING
-          PATTERN "*.pyi")
-
-  if(PYARROW_REQUIRE_STUB_DOCSTRINGS)
-    install(CODE "
-      execute_process(
-        COMMAND \"${Python3_EXECUTABLE}\"
-                \"${CMAKE_CURRENT_SOURCE_DIR}/scripts/update_stub_docstrings.py\"
-                \"${CMAKE_INSTALL_PREFIX}\"
-                \"${CMAKE_CURRENT_SOURCE_DIR}\"
-        RESULT_VARIABLE _pyarrow_stub_docstrings_result
-      )
-      if(NOT _pyarrow_stub_docstrings_result EQUAL 0)
-        message(FATAL_ERROR \"Stub docstring injection failed (exit code: \${_pyarrow_stub_docstrings_result})\")
-      endif()
-    ")
-  endif()
-else()
-  if(PYARROW_REQUIRE_STUB_DOCSTRINGS)
-    message(FATAL_ERROR "PyArrow stub source directory not found at ${PYARROW_STUBS_SOURCE_DIR}; "
-                        "cannot build wheel without .pyi files.")
-  endif()
+# The stubs are currently incomplete, and some type checkers consume .pyi files
+# even without the py.typed marker. Re-enable this when the stubs are complete.
+if(PYARROW_REQUIRE_STUB_DOCSTRINGS)
+  message(FATAL_ERROR "PYARROW_REQUIRE_STUB_DOCSTRINGS cannot be used while "
+                      "pyarrow-stubs are omitted from wheels (GH-49831).")
 endif()
+# set(PYARROW_STUBS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyarrow-stubs/pyarrow")
+# if(EXISTS "${PYARROW_STUBS_SOURCE_DIR}")
+#   install(DIRECTORY "${PYARROW_STUBS_SOURCE_DIR}/"
+#           DESTINATION "."
+#           FILES_MATCHING
+#           PATTERN "*.pyi")
+#
+#   if(PYARROW_REQUIRE_STUB_DOCSTRINGS)
+#     install(CODE "
+#       execute_process(
+#         COMMAND \"${Python3_EXECUTABLE}\"
+#                 \"${CMAKE_CURRENT_SOURCE_DIR}/scripts/update_stub_docstrings.py\"
+#                 \"${CMAKE_INSTALL_PREFIX}\"
+#                 \"${CMAKE_CURRENT_SOURCE_DIR}\"
+#         RESULT_VARIABLE _pyarrow_stub_docstrings_result
+#       )
+#       if(NOT _pyarrow_stub_docstrings_result EQUAL 0)
+#         message(FATAL_ERROR \"Stub docstring injection failed (exit code: \${_pyarrow_stub_docstrings_result})\")
+#       endif()
+#     ")
+#   endif()
+# else()
+#   if(PYARROW_REQUIRE_STUB_DOCSTRINGS)
+#     message(FATAL_ERROR "PyArrow stub source directory not found at ${PYARROW_STUBS_SOURCE_DIR}; "
+#                         "cannot build wheel without .pyi files.")
+#   endif()
+# endif()

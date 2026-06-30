@@ -133,7 +133,7 @@ jobs:
       - name: Build libarrow
         shell: bash
         env:
-          ARCH: {{ "${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64v8' }}" }}
+          ARCH: {{ "${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64/v8' }}" }}
           UBUNTU: {{ '${{ matrix.ubuntu }}' }}
         {{ macros.github_set_sccache_envvars()|indent(8) }}
         run: |
@@ -374,10 +374,10 @@ jobs:
           arrow/ci/scripts/install_sccache.sh unknown-linux-musl /usr/local/bin
       - name: Install R package system dependencies (Linux)
         if: matrix.platform.name == 'Linux'
-        run: sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+        run: sudo apt-get install -y libcurl4-openssl-dev libssl-dev libuv1-dev
       - name: Install R package system dependencies (macOS)
         if: matrix.platform.name == 'macOS'
-        run: brew install sccache openssl curl
+        run: brew install sccache openssl curl libuv
       - name: Remove arrow/
         run: |
           rm -rf arrow/
